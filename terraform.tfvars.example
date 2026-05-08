@@ -1,0 +1,8 @@
+source_region       = "ap-northeast-2"
+dr_region           = "ap-northeast-1"
+source_vpc_cidr     = "10.100.0.0/16"
+dr_vpc_cidr         = "10.200.0.0/16"
+source_instance_type = "t3.micro"
+replication_server_instance_type = "t3.small"
+environment         = "dr-test"
+owner               = "your-team"
