@@ -136,7 +136,6 @@ DRS는 3가지 독립적인 설정이 있다:
 │   ├── 02_dr_drill.sh        # DR 드릴 (비침습 테스트)
 │   ├── 03_failover.sh        # 실제 Failover
 │   └── 04_failback.sh        # Failback (소스 복귀)
-└── AWS_DRS_학습노트.md        # Obsidian 학습 노트
 ```
 
 ### 사용 모듈
@@ -533,6 +532,97 @@ cd /tmp
 
 ---
 
+## DRS 핵심 개념
+
+### 복제 메커니즘
+
+```
+소스 서버 디스크:
+┌──────────────────────┐
+│  Block A [변경됨]     │
+│  Block B             │ → DRS Agent (커널 드라이버)
+│  Block C [변경됨]     │   - 블록 변경 실시간 감지
+└──────────────────────┘   - 변경된 블록만 압축/암호화하여 TCP 1500 전송
+                                    │
+                              VPC Peering
+                                    │
+                                    ▼
+                           Replication Server
+                           - 수신된 블록을 Staging EBS에 기록
+                           - PIT 정책에 따라 스냅샷 생성
+```
+
+- **블록 레벨 복제**: 파일이 아닌 디스크 섹터 단위. OS/파일시스템 무관하게 디스크 전체 복제.
+- **최초**: 전체 디스크 동기화 (Initial Sync)
+- **이후**: 변경된 블록만 전송 (Continuous Replication)
+
+### RPO / RTO
+
+| 메트릭 | 값 | 의미 |
+|--------|-----|------|
+| **RPO** | 초 단위 | 장애 시 최대 데이터 손실량. DRS는 거의 실시간 복제. |
+| **RTO** | 분 단위 | 복구까지 걸리는 시간. Recovery Instance 부팅 시간. |
+
+### DR 전략에서의 위치
+
+```
+비용 ↑    Active/Active    (RTO: ~0, RPO: ~0)
+  │       Warm Standby     (RTO: 분, RPO: 초)
+  │       Pilot Light/DRS  (RTO: 분, RPO: 초)  ← 현재
+  ▼       Backup & Restore (RTO: 시간, RPO: 시간)
+```
+
+DRS는 **Pilot Light** 전략. 데이터만 실시간 복제하고, 서버는 DR 발동 시에만 시작.
+
+### 용어 정리
+
+| 용어 | 설명 |
+|------|------|
+| Source Server | 복제 대상 서버 (온프레미스 또는 EC2) |
+| Replication Server | DR 리전에서 복제 데이터를 받는 DRS 관리형 EC2 (상시 실행) |
+| Staging EBS | 소스 디스크의 실시간 복제본 |
+| Recovery Instance | DR 발동 시 Staging EBS 스냅샷으로 부팅되는 EC2 |
+| PIT (Point-in-Time) | 특정 시점 복구. 과거 스냅샷으로 되돌릴 수 있음 |
+| Drill | 비침습 복구 테스트. 복제 중단 없이 Recovery Instance 생성 |
+| Failover | 실제 재해 복구. 복제 중단됨. Failback 필요 |
+| Failback | DR → 소스로 역복제 후 원래 환경으로 복귀 |
+
+### DRS가 관리하는 리소스 (자동 생성)
+
+Replication Server에 붙는 EBS 볼륨:
+
+| 볼륨 | 크기 | 타입 | 용도 |
+|------|------|------|------|
+| 루트 볼륨 | 8GB | gp3 | Replication Server OS |
+| Staging Disk | 소스와 동일 | standard | 소스 디스크 복제본 |
+| Buffer Disk | 소스와 동일 | standard | 블록 변경 추적/버퍼 |
+
+---
+
+## 학습 체크리스트
+
+### 개념
+- [ ] DRS는 에이전트 기반 블록 레벨 복제 서비스
+- [ ] RPO 초 단위 / RTO 분 단위
+- [ ] Pilot Light 전략: 데이터만 복제, 서버는 DR 시에만 시작
+- [ ] Replication Server는 복제 중 상시 실행 (비용 발생)
+- [ ] PIT 정책으로 다단계 시점 복구 가능
+- [ ] Drill은 비침습 (복제 유지), Recovery는 복제 중단
+
+### 설정
+- [ ] DRS에는 3가지 설정 레이어: Initialize / Replication / Launch
+- [ ] Replication Template은 계정+리전당 1개 (조정 불가)
+- [ ] PRIVATE_IP 모드: VPC Peering/VPN + NAT Gateway + VPC Endpoint 필요
+- [ ] Launch Settings 미설정 시 Drill 실패 (VPCIdNotSpecified)
+
+### 운영
+- [ ] 에이전트 재설치 전 반드시 완전 제거 (잔여 프로세스/파일 확인)
+- [ ] disconnect 시 Replication Server 자동 종료
+- [ ] terraform destroy 전 Job → Source Server 순서로 삭제
+- [ ] AL2023 최신 커널은 DRS 드라이버 호환 문제 있음 → AL2 권장
+
+---
+
 ## 참고 문서
 
 - [AWS DRS 서비스 할당량](https://docs.aws.amazon.com/general/latest/gr/drs.html)
@@ -540,3 +630,4 @@ cd /tmp
 - [DRS 에이전트 설치 요구사항](https://docs.aws.amazon.com/drs/latest/userguide/installation-requirements.html)
 - [DRS 트러블슈팅](https://docs.aws.amazon.com/drs/latest/userguide/Troubleshooting-Agent-Issues.html)
 - [DRS API Reference](https://docs.aws.amazon.com/drs/latest/APIReference/API_CreateReplicationConfigurationTemplate.html)
+- [AWS DR 백서](https://docs.aws.amazon.com/whitepapers/latest/disaster-recovery-workloads-on-aws/disaster-recovery-workloads-on-aws.html)
